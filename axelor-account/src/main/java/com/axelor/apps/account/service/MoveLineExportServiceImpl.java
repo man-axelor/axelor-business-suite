@@ -1,4 +1,4 @@
-/*
+/**
  * Axelor Business Solutions
  *
  * Copyright (C) 2018 Axelor (<http://axelor.com>).
@@ -55,9 +55,12 @@ import com.axelor.apps.account.service.app.AppAccountService;
 import com.axelor.apps.account.service.config.AccountConfigService;
 import com.axelor.apps.account.service.move.MoveLineService;
 import com.axelor.apps.base.db.Company;
+import com.axelor.apps.base.db.IAdministration;
 import com.axelor.apps.base.db.Partner;
 import com.axelor.apps.base.db.repo.SequenceRepository;
 import com.axelor.apps.base.service.PartnerService;
+import com.axelor.apps.base.service.administration.GeneralService;
+import com.axelor.apps.base.service.administration.GeneralServiceImpl;
 import com.axelor.apps.base.service.administration.SequenceService;
 import com.axelor.apps.base.service.app.AppBaseServiceImpl;
 import com.axelor.apps.tool.file.CsvTool;
@@ -69,6 +72,23 @@ import com.axelor.inject.Beans;
 import com.axelor.meta.MetaFiles;
 import com.google.inject.Inject;
 import com.google.inject.persist.Transactional;
+import org.apache.commons.lang3.StringUtils;
+import org.joda.time.DateTime;
+import org.joda.time.LocalDate;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+
+import javax.persistence.Query;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.lang.invoke.MethodHandles;
+import java.math.BigDecimal;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+import java.util.ArrayList;
+import java.util.List;
 
 public class MoveLineExportServiceImpl implements MoveLineExportService{
 
@@ -913,9 +933,14 @@ public class MoveLineExportServiceImpl implements MoveLineExportService{
 		List<String[]> allMoveLineData = new ArrayList<>();
 		Company company = accountingReport.getCompany();
 		
+		LocalDate interfaceDate = moveLineReport.getDate();
+		String exportNumber = this.getSaleExportNumber(company);
+
 		String moveLineQueryStr = "";
 		moveLineQueryStr += String.format(" AND self.move.company = %s", company.getId());
-		moveLineQueryStr += String.format(" AND self.move.period.year = %s", accountingReport.getYear().getId());
+		if(accountingReport.getYear() != null){
+			moveLineQueryStr += String.format(" AND self.move.period.year = %s", accountingReport.getYear().getId());
+		}
 		
 		if(accountingReport.getPeriod() != null)	{
 			moveLineQueryStr += String.format(" AND self.move.period = %s", accountingReport.getPeriod().getId());
@@ -937,11 +962,14 @@ public class MoveLineExportServiceImpl implements MoveLineExportService{
         }
 
 		List<MoveLine> moveLineList = moveLineRepo.all().filter("self.move.statusSelect = ?1" + moveLineQueryStr, MoveRepository.STATUS_VALIDATED).order("date").order("name").fetch();
-		if(moveLineList.size() > 0) {
-			
+		if(!moveLineList.isEmpty()) {
+			List<Move> moveList = new ArrayList<>();
 			for (MoveLine moveLine : moveLineList) {
-				String items[] = new String[18];
+				String[] items = new String[18];
 				Move move = moveLine.getMove();
+				if(!moveList.contains(move)){
+					moveList.add(move);
+				}
 				Journal journal = move.getJournal();
 				items[0] = journal.getCode();
 				items[1] = journal.getName();
@@ -991,12 +1019,16 @@ public class MoveLineExportServiceImpl implements MoveLineExportService{
 				}
 				allMoveLineData.add(items);
 			}
-		}
 
+			if(!administration){
+				updateMoveList(moveList, moveLineReport, interfaceDate, exportNumber);
+			}
+		}
+		
 		String fileName = this.setFileName(accountingReport);
 		String filePath = accountConfigService.getExportPath(accountConfigService.getAccountConfig(company));
 		//TODO create a template Helper
-
+		
 		new File(filePath).mkdirs();
 		log.debug("Full path to export : {}{}" , filePath, fileName);
 //		CsvTool.csvWriter(filePath, fileName, '|', null, allMoveLineData);
@@ -1004,12 +1036,13 @@ public class MoveLineExportServiceImpl implements MoveLineExportService{
 		accountingReportRepo.save(accountingReport);
 
 		Path path = Paths.get(filePath+fileName);
-
+		
 		try (InputStream is = new FileInputStream(path.toFile())) {
 			Beans.get(MetaFiles.class).attach(is, fileName, accountingReport);
 		}
 
 	}
+
 
 	/**
 	 * Méthode réalisant l'export SI - Agresso des fichiers détails
@@ -1407,8 +1440,11 @@ public class MoveLineExportServiceImpl implements MoveLineExportService{
 			fileName += accountingReport.getDateTo().format(DateTimeFormatter.ofPattern(DATE_FORMAT_YYYYMMDD));
 		}else if(accountingReport.getPeriod() != null){
 			fileName += accountingReport.getPeriod().getToDate().format(DateTimeFormatter.ofPattern(DATE_FORMAT_YYYYMMDD));
-		}else {
+		}else if(accountingReport.getPeriod() != null){
 			fileName += accountingReport.getYear().getToDate().format(DateTimeFormatter.ofPattern(DATE_FORMAT_YYYYMMDD));
+		}
+		else {
+			throw new AxelorException(I18n.get(IExceptionMessage.MOVE_LINE_EXPORT_YEAR_OR_PERIOD_OR_DATE_IS_NULL), IException.NO_VALUE);
 		}
 		fileName +=".csv";
 
